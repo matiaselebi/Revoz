@@ -1,0 +1,6 @@
+# Plugin de ejemplo: copiá esta carpeta a %APPDATA%\Revoz\plugins\ para probarlo.
+name = "Half-Life: audio WAV suelto"
+version = "0.1"
+author = "Revoz (ejemplo)"
+kind = "game"          # "game" o "provider"
+appids = ["70"]        # appids de Steam a los que aplica
