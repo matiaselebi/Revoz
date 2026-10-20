@@ -1,8 +1,8 @@
 """Sistema de plugins.
 
 Un plugin es una carpeta dentro de la carpeta de plugins con:
-  plugin.toml  – metadatos (name, version, author, kind, appids)
-  plugin.py    – define una clase `Plugin` que hereda de GamePlugin o Provider
+  plugin.toml  - metadatos (name, version, author, kind, appids)
+  plugin.py    - define una clase `Plugin` que hereda de GamePlugin o Provider
 
 Un plugin ejecuta código en la PC del usuario, así que solo se carga si el usuario
 lo marcó como confiable. Si cambia cualquier archivo del plugin, hay que volver a confirmarlo.
@@ -24,6 +24,8 @@ from pathlib import Path
 from revoz.core.providers import Provider
 
 GAME, PROVIDER = "game", "provider"
+# appid de Steam, o id de Epic/GOG con prefijo
+_APPID = re.compile(r"\d+|(epic|gog):[\w.-]+")
 
 
 class PluginError(Exception):
@@ -78,8 +80,8 @@ def _read_info(folder: Path) -> PluginInfo:
         raise PluginError("falta 'name'")
     if kind not in (GAME, PROVIDER):
         raise PluginError("'kind' debe ser \"game\" o \"provider\"")
-    if not isinstance(appids, list) or not all(isinstance(a, str) and a.isdigit() for a in appids):
-        raise PluginError("'appids' debe ser una lista de appids de Steam como texto")
+    if not isinstance(appids, list) or not all(isinstance(a, str) and _APPID.fullmatch(a) for a in appids):
+        raise PluginError("'appids' debe ser una lista como [\"12210\", \"epic:Nombre\", \"gog:1234\"]")
     if kind == GAME and not appids:
         raise PluginError("un plugin de juego necesita al menos un appid")
     return PluginInfo(

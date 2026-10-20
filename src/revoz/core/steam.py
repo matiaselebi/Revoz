@@ -20,6 +20,7 @@ class Game:
     path: Path
     buildid: str
     cover: Path | None
+    store: str = "Steam"
 
 
 def parse_vdf(text: str) -> dict:

@@ -10,6 +10,9 @@ rem Los plugins pueden usar estos modulos de la libreria estandar aunque Revoz n
 rem ponytail: lista fija; si un plugin necesita otro modulo, agregarlo aca con --hidden-import.
 .venv\Scripts\pyinstaller --noconfirm --clean --onefile --windowed --name Revoz ^
     --paths src ^
+    --icon src\revoz\assets\revoz.ico ^
+    --add-data "src\revoz\assets;revoz\assets" ^
+    --hidden-import PySide6.QtMultimedia ^
     --hidden-import wave --hidden-import csv --hidden-import gzip --hidden-import zlib ^
     --hidden-import subprocess --hidden-import sqlite3 --hidden-import base64 ^
     --hidden-import xml.etree.ElementTree --hidden-import concurrent.futures --hidden-import ctypes ^

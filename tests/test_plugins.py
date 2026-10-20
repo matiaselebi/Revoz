@@ -129,8 +129,9 @@ def test_supports():
         (providers.DeepL(), [{"language": "ES", "name": "Spanish"}, {"language": "PT-BR"}], {"es", "pt-br"}),
         (providers.ElevenLabs(), [{"languages": [{"language_id": "es"}]}, {"languages": [{"language_id": "en"}]}], {"es", "en"}),
         (providers.Google(), {"data": {"languages": [{"language": "es"}, {"language": "fr"}]}}, {"es", "fr"}),
-        (providers.OpenAI(), {"data": []}, None),
         (providers.Anthropic(), {"data": []}, None),
+        (providers.Gemini(), {"models": []}, None),
+        *[(p, {"data": []}, None) for p in providers.BUILTIN if isinstance(p, providers.OpenAICompatible)],
     ],
 )
 def test_providers_parse_and_keep_key_out_of_url(monkeypatch, provider, response, expected):
@@ -145,6 +146,11 @@ def test_providers_parse_and_keep_key_out_of_url(monkeypatch, provider, response
     url, headers = calls[0]
     assert url.startswith("https://") and "CLAVE-SECRETA" not in url
     assert any("CLAVE-SECRETA" in v for v in headers.values())
+
+
+def test_builtin_provider_names_are_unique():
+    names = [p.name for p in providers.BUILTIN]
+    assert len(names) == len(set(names))
 
 
 def test_get_json_rejects_http():

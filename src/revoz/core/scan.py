@@ -1,9 +1,9 @@
 """Escáner de audio. Lee solo cabeceras (primeros/últimos bytes); nunca escribe en el juego.
 
 Clasifica cada archivo en:
-  EASY   – audio legible directo (vgmstream lo abre): fácil de traducir.
-  PACK   – contenedor sin cifrar: hace falta un plugin que extraiga el audio.
-  LOCKED – contenedor o audio cifrado: hace falta un plugin con la clave.
+  EASY   - audio legible directo (vgmstream lo abre): fácil de traducir.
+  PACK   - contenedor sin cifrar: hace falta un plugin que extraiga el audio.
+  LOCKED - contenedor o audio cifrado: hace falta un plugin con la clave.
 """
 
 from __future__ import annotations

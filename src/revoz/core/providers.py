@@ -11,7 +11,8 @@ import urllib.error
 import urllib.request
 
 TARGET_LANGUAGES = [
-    ("es", "Español"),
+    ("es-419", "Español (Latinoamérica)"),
+    ("es", "Español (España)"),
     ("en", "English"),
     ("pt", "Português"),
     ("fr", "Français"),
@@ -55,18 +56,30 @@ def get_json(url: str, headers: dict[str, str]) -> object:
         with urllib.request.urlopen(req, timeout=15) as r:
             return json.loads(r.read(2_000_000))
     except urllib.error.HTTPError as e:
-        if e.code in (401, 403):
+        if e.code in (400, 401, 403):  # Google y xAI responden 400 a una clave inválida
             raise ProviderError("Clave inválida o sin permisos") from None
         raise ProviderError(f"El servicio respondió con error {e.code}") from None
     except (urllib.error.URLError, TimeoutError, ValueError):
         raise ProviderError("No se pudo conectar con el servicio") from None
 
 
-class OpenAI(Provider):
-    name = "OpenAI"
+class OpenAICompatible(Provider):
+    """Modelos de lenguaje con API estilo OpenAI: se valida la clave listando los modelos."""
+
+    def __init__(self, name: str, models_url: str) -> None:
+        self.name = name
+        self.models_url = models_url
 
     def languages(self, key: str) -> set[str] | None:
-        get_json("https://api.openai.com/v1/models", {"Authorization": f"Bearer {key}"})
+        get_json(self.models_url, {"Authorization": f"Bearer {key}"})
+        return None
+
+
+class Gemini(Provider):
+    name = "Google Gemini"
+
+    def languages(self, key: str) -> set[str] | None:
+        get_json("https://generativelanguage.googleapis.com/v1beta/models", {"x-goog-api-key": key})
         return None
 
 
@@ -105,4 +118,20 @@ class Google(Provider):
         return {d["language"].lower() for d in data["data"]["languages"]}
 
 
-BUILTIN: list[Provider] = [OpenAI(), Anthropic(), DeepL(), ElevenLabs(), Google()]
+BUILTIN: list[Provider] = [
+    # Modelos de lenguaje (traducen cualquier idioma común)
+    OpenAICompatible("OpenAI", "https://api.openai.com/v1/models"),
+    Anthropic(),
+    Gemini(),
+    OpenAICompatible("Mistral", "https://api.mistral.ai/v1/models"),
+    OpenAICompatible("DeepSeek", "https://api.deepseek.com/models"),
+    OpenAICompatible("xAI (Grok)", "https://api.x.ai/v1/models"),
+    OpenAICompatible("Groq", "https://api.groq.com/openai/v1/models"),
+    OpenAICompatible("Cohere", "https://api.cohere.com/v1/models"),
+    OpenAICompatible("OpenRouter", "https://openrouter.ai/api/v1/key"),
+    # Traductores
+    DeepL(),
+    Google(),
+    # Voz y doblaje
+    ElevenLabs(),
+]

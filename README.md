@@ -11,7 +11,6 @@ Revoz is an open source desktop tool for translating the **voices** of video gam
 It scans your Steam library, tells you which games have audio that can be translated, and lets you plug in your own API key for any translation or dubbing service. The community extends it with **plugins**: one plugin per game (or engine) that knows how to extract and replace that game's audio, and plugins that add new AI services.
 
 > **Status: early development.** Library scanning, the plugin system, API key storage and language checks work. The actual translation pipeline (extract → transcribe → translate → synthesize → replace) is not implemented yet.
-
 ### What Revoz is (and is not)
 
 - Revoz is **only a tool**. It does not include, host, distribute or link game files, audio, encryption keys or translations.
@@ -20,7 +19,14 @@ It scans your Steam library, tells you which games have audio that can be transl
 
 ### Features
 
-- Detects installed Steam games, with their covers.
+- Detects installed games from **Steam** (with covers), **Epic Games** and **GOG Galaxy**.
+- The same game installed from several stores (for example Steam with mods and Epic untouched) shows as **one cover** tagged `STEAM + EPIC`. Its page has a **Version** selector to choose which install to work on. Games are grouped only when their names match exactly, ignoring case and ™/®.
+- Each game's page shows which version is in use (`Steam (original)`, `Added folder`, …) and has a **Use another folder of this game** button, for example to work on a modded copy. Revoz compares the folder's file structure with the original and rejects folders of a different game. The chosen version is remembered.
+- **Add game** button for anything else: pick the game's `.exe`, a desktop shortcut, or its folder. Right-click a game to open its folder, scan it again, or remove it (manually added games only).
+- **Game folders** (in Profile): pick a folder like `D:\Games` and every subfolder with an `.exe` shows up as a game, for games no store registers.
+- **Search and filters** in the library: by name, by status (easy to translate, needs a plugin, no audio, scanning) and by store.
+- The top menu (Library, Plugins, Profile) stays visible on every screen.
+- **Interface languages:** Spanish, English, Portuguese (Brazil) and Chinese (Simplified). Change it in Profile → Appearance; it switches right away, without restarting. The first time, Revoz uses your Windows language.
 - Scans each game's files automatically and shows a badge on its cover:
 
 | Badge | Meaning |
@@ -32,7 +38,19 @@ It scans your Steam library, tells you which games have audio that can be transl
 - Scanning is **read-only**: Revoz reads only file headers and never modifies your games. Results are cached and refreshed when Steam updates a game.
 - API keys are stored in the operating system's secure store (Windows Credential Manager), never in plain text.
 - Target language selector with a **Check language** button that asks the chosen service whether it supports that language and validates your key.
-- Built-in services: OpenAI, Anthropic, DeepL, ElevenLabs, Google Translate. More can be added with plugins.
+- Built-in services:
+  - Language models: OpenAI, Anthropic, Google Gemini, Mistral, DeepSeek, xAI (Grok), Groq, Cohere, OpenRouter.
+  - Translators: DeepL, Google Translate.
+  - Voice and dubbing: ElevenLabs.
+  - More can be added with plugins.
+- **Translate voices** opens the game's translation project:
+  - **Progress** bars for transcribed, translated and reviewed lines.
+  - **Estimated cost**: total audio minutes (read from file headers) and estimated characters, multiplied by the prices you enter from your provider's pricing page. Revoz doesn't guess prices.
+  - **Line review** table: listen to the original audio, edit character, original text and translation, set the status, search and filter.
+  - **Export/Import CSV** to review in a spreadsheet or split the work between several people. Importing merges by line id and empty cells never erase anything.
+  - Automatic transcription and translation with AI are not implemented yet.
+- **Profile** (top right): your name or nickname, a photo, your usual target language and AI (every game starts with them), your activity, and shortcuts to the data folder and a full re-scan. It also has **themes**: Revoz (default), System (follows Windows light/dark), Dark, Light, Midnight, Arcade, Forest and High contrast. No accounts or sign-in: everything stays on your PC.
+- Each game's page has a **Compatibility** section showing its plugin (if any), the game id plugins use, and an **Add plugin for this game** button.
 
 ### Requirements
 
@@ -93,10 +111,16 @@ name = "My Game: voice audio"   # required
 version = "0.1"
 author = "your name"
 kind = "game"                   # required: "game" or "provider"
-appids = ["12345"]              # Steam appids, as strings (required for "game")
+appids = ["12345"]              # game ids (required for "game")
 ```
 
-Find a game's appid in its Steam store URL: `store.steampowered.com/app/<appid>/`.
+Game ids by store:
+
+- **Steam:** the appid, from the store URL `store.steampowered.com/app/<appid>/`. Example: `"12210"`.
+- **Epic:** `epic:` + the `AppName` from `C:\ProgramData\Epic\EpicGamesLauncher\Data\Manifests\*.item`. Example: `"epic:Fortnite"`.
+- **GOG:** `gog:` + the game id from `goggame-<id>.info` in the game folder. Example: `"gog:1207658924"`.
+
+A plugin can list the same game on several stores: `appids = ["12210", "epic:Something"]`.
 
 #### Game plugins
 
@@ -166,7 +190,10 @@ Rules for provider plugins:
 src/revoz/
 ├── core/            # logic, no UI code
 │   ├── steam.py     # Steam library detection
+│   ├── stores.py    # Epic, GOG and manually added games
 │   ├── scan.py      # audio signature scanner
+│   ├── audio.py     # audio duration from file headers
+│   ├── project.py   # translation project: lines, status, CSV
 │   ├── plugins.py   # plugin loading and trust
 │   ├── providers.py # AI services
 │   └── keys.py      # API keys (OS secure store)
@@ -179,11 +206,14 @@ Contributions are welcome: game plugins, AI services, format detection and trans
 
 - Never commit game files, audio, keys or third-party translations. Test fixtures must be synthetic.
 - Keep logic in `core/` and UI code in `ui/`.
+- Wrap every interface text in `tr("...")` (written in Spanish). To add a language, copy the `"en"` block in `src/revoz/ui/translations.py`, translate it, and add it to `LANGUAGES` in `i18n.py`. A test fails if any text is missing.
 - Add a test for any new logic.
 
 ### License
 
-To be decided (MIT planned).
+[MIT](LICENSE). You can use, modify and share Revoz, including in your own projects, as long as you keep the license notice.
+
+Revoz uses [PySide6](https://doc.qt.io/qtforpython/) (Qt for Python), licensed under the LGPL-3.0.
 
 ---
 
@@ -194,7 +224,6 @@ Revoz es una herramienta de escritorio open source para traducir las **voces** d
 Analiza tu biblioteca de Steam, te dice qué juegos tienen audio que se puede traducir y te deja usar tu propia API key de cualquier servicio de traducción o doblaje. La comunidad la amplía con **plugins**: un plugin por juego (o por motor) que sabe extraer y reemplazar el audio de ese juego, y plugins que suman nuevos servicios de IA.
 
 > **Estado: desarrollo temprano.** Ya funcionan el análisis de la biblioteca, el sistema de plugins, el guardado de API keys y la comprobación de idiomas. El proceso de traducción en sí (extraer → transcribir → traducir → sintetizar → reemplazar) todavía no está implementado.
-
 ### Qué es Revoz (y qué no)
 
 - Revoz es **solo una herramienta**. No incluye, aloja, distribuye ni enlaza archivos de juegos, audios, claves de cifrado ni traducciones.
@@ -203,7 +232,14 @@ Analiza tu biblioteca de Steam, te dice qué juegos tienen audio que se puede tr
 
 ### Funciones
 
-- Detecta los juegos instalados en Steam, con sus carátulas.
+- Detecta los juegos instalados de **Steam** (con carátulas), **Epic Games** y **GOG Galaxy**.
+- El mismo juego instalado desde varias tiendas (por ejemplo Steam con mods y Epic sin tocar) aparece como **una sola carátula** con la etiqueta `STEAM + EPIC`. Su página tiene un selector de **Versión** para elegir en qué instalación trabajar. Los juegos se agrupan solo si el nombre coincide exacto, sin importar mayúsculas ni ™/®.
+- La página de cada juego muestra qué versión se está usando (`Steam (original)`, `Carpeta agregada`, …) y tiene un botón **Usar otra carpeta de este juego**, por ejemplo para trabajar sobre una copia con mods. Revoz compara la estructura de archivos de la carpeta con la original y rechaza las carpetas de otro juego. La versión elegida se recuerda.
+- Botón **Agregar juego** para cualquier otro: elegís el `.exe` del juego, un acceso directo del escritorio o su carpeta. Con clic derecho sobre un juego podés abrir su carpeta, volver a analizarlo o quitarlo (solo los agregados a mano).
+- **Carpetas de juegos** (en el Perfil): elegís una carpeta como `D:\Juegos` y cada subcarpeta con un `.exe` aparece como un juego, para juegos que ninguna tienda registra.
+- **Buscador y filtros** en la biblioteca: por nombre, por estado (fáciles de traducir, necesitan plugin, sin audio, analizándose) y por tienda.
+- El menú de arriba (Biblioteca, Plugins, Perfil) queda visible en todas las pantallas.
+- **Idiomas de la interfaz:** español, inglés, portugués (Brasil) y chino (simplificado). Se cambia en Perfil → Apariencia y se aplica al instante, sin reiniciar. La primera vez, Revoz usa el idioma de Windows.
 - Analiza automáticamente los archivos de cada juego y muestra un ícono en su carátula:
 
 | Ícono | Significado |
@@ -215,7 +251,19 @@ Analiza tu biblioteca de Steam, te dice qué juegos tienen audio que se puede tr
 - El análisis es **de solo lectura**: Revoz lee solo las cabeceras de los archivos y nunca modifica tus juegos. Los resultados se guardan y se actualizan cuando Steam actualiza un juego.
 - Las API keys se guardan en el almacén seguro del sistema (Administrador de credenciales de Windows), nunca en texto plano.
 - Selector de idioma destino con un botón **Comprobar idioma** que le pregunta al servicio elegido si soporta ese idioma y valida tu clave.
-- Servicios incluidos: OpenAI, Anthropic, DeepL, ElevenLabs, Google Translate. Se pueden sumar más con plugins.
+- Servicios incluidos:
+  - Modelos de lenguaje: OpenAI, Anthropic, Google Gemini, Mistral, DeepSeek, xAI (Grok), Groq, Cohere, OpenRouter.
+  - Traductores: DeepL, Google Translate.
+  - Voz y doblaje: ElevenLabs.
+  - Se pueden sumar más con plugins.
+- **Traducir voces** abre el proyecto de traducción del juego:
+  - Barras de **progreso** de líneas transcritas, traducidas y revisadas.
+  - **Costo estimado**: minutos totales de audio (leídos de las cabeceras de los archivos) y caracteres estimados, multiplicados por los precios que cargás desde la página de precios de tu proveedor. Revoz no inventa precios.
+  - Tabla de **revisión de líneas**: escuchar el audio original, editar personaje, texto original y traducción, cambiar el estado, buscar y filtrar.
+  - **Exportar/Importar CSV** para revisar en una planilla o repartir el trabajo entre varias personas. Al importar se combina por id de línea y las celdas vacías nunca borran nada.
+  - La transcripción y traducción automáticas con IA todavía no están implementadas.
+- **Perfil** (arriba a la derecha): tu nombre o apodo, una foto, el idioma y la IA que usás normalmente (cada juego arranca con ellos), tu actividad y accesos a la carpeta de datos y a volver a analizar todo. También tiene **temas**: Revoz (el de la app), Sistema (sigue el modo claro u oscuro de Windows), Oscuro, Claro, Medianoche, Arcade, Bosque y Alto contraste. Sin cuentas ni inicio de sesión: todo queda en tu PC.
+- La página de cada juego tiene una sección **Compatibilidad** que muestra su plugin (si tiene), el id del juego que usan los plugins y un botón **Agregar plugin para este juego**.
 
 ### Requisitos
 
@@ -276,10 +324,16 @@ name = "Mi Juego: audio de voces"   # obligatorio
 version = "0.1"
 author = "tu nombre"
 kind = "game"                       # obligatorio: "game" o "provider"
-appids = ["12345"]                  # appids de Steam, como texto (obligatorio para "game")
+appids = ["12345"]                  # ids de los juegos (obligatorio para "game")
 ```
 
-El appid de un juego está en la URL de su página de Steam: `store.steampowered.com/app/<appid>/`.
+Ids de juego según la tienda:
+
+- **Steam:** el appid, que está en la URL de la tienda `store.steampowered.com/app/<appid>/`. Ejemplo: `"12210"`.
+- **Epic:** `epic:` + el `AppName` de `C:\ProgramData\Epic\EpicGamesLauncher\Data\Manifests\*.item`. Ejemplo: `"epic:Fortnite"`.
+- **GOG:** `gog:` + el id del juego que está en `goggame-<id>.info` dentro de la carpeta del juego. Ejemplo: `"gog:1207658924"`.
+
+Un plugin puede listar el mismo juego en varias tiendas: `appids = ["12210", "epic:Algo"]`.
 
 #### Plugins de juego
 
@@ -349,7 +403,10 @@ Reglas para los plugins de proveedor:
 src/revoz/
 ├── core/            # lógica, sin código de interfaz
 │   ├── steam.py     # detección de la biblioteca de Steam
+│   ├── stores.py    # juegos de Epic, GOG y agregados a mano
 │   ├── scan.py      # escáner de firmas de audio
+│   ├── audio.py     # duración de los audios desde sus cabeceras
+│   ├── project.py   # proyecto de traducción: líneas, estados, CSV
 │   ├── plugins.py   # carga y confianza de plugins
 │   ├── providers.py # servicios de IA
 │   └── keys.py      # API keys (almacén seguro del sistema)
@@ -362,8 +419,11 @@ Las contribuciones son bienvenidas: plugins de juegos, servicios de IA, detecci�
 
 - Nunca subas archivos de juegos, audios, claves ni traducciones de terceros. Los datos de prueba tienen que ser sintéticos.
 - Mantené la lógica en `core/` y la interfaz en `ui/`.
+- Pasá cada texto de la interfaz por `tr("...")` (escrito en español). Para sumar un idioma, copiá el bloque `"en"` de `src/revoz/ui/translations.py`, traducilo y agregalo a `LANGUAGES` en `i18n.py`. Un test falla si falta algún texto.
 - Agregá un test para cualquier lógica nueva.
 
 ### Licencia
 
-A definir (se planea MIT).
+[MIT](LICENSE). Podés usar, modificar y compartir Revoz, incluso en tus propios proyectos, siempre que mantengas el aviso de licencia.
+
+Revoz usa [PySide6](https://doc.qt.io/qtforpython/) (Qt para Python), con licencia LGPL-3.0.

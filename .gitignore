@@ -3,6 +3,9 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .env
+# Documentos internos de planificación (no se publican)
+ROADMAP.md
+CONTEXTO_PROYECTO.md
 # Compilación del .exe (se publica en GitHub Releases, no en el repo)
 build/
 dist/
