@@ -4,8 +4,11 @@ Un plugin es una carpeta dentro de la carpeta de plugins con:
   plugin.toml  - metadatos (name, version, author, kind, appids)
   plugin.py    - define una clase `Plugin` que hereda de GamePlugin o Provider
 
-Un plugin ejecuta código en la PC del usuario, así que solo se carga si el usuario
-lo marcó como confiable. Si cambia cualquier archivo del plugin, hay que volver a confirmarlo.
+Tipos ("kind"):
+  game, provider  - traen código (plugin.py). Solo se cargan si el usuario los aprobó;
+                    si cambia cualquier archivo, hay que volver a aprobarlos.
+  theme, language - solo datos dentro de plugin.toml (colores o textos). No ejecutan nada,
+                    así que no piden aprobación; la interfaz valida cada valor antes de usarlo.
 """
 
 from __future__ import annotations
@@ -23,7 +26,8 @@ from pathlib import Path
 
 from revoz.core.providers import Provider
 
-GAME, PROVIDER = "game", "provider"
+GAME, PROVIDER, THEME, LANGUAGE = "game", "provider", "theme", "language"
+CODE_KINDS = (GAME, PROVIDER)  # los únicos que ejecutan código
 # appid de Steam, o id de Epic/GOG con prefijo
 _APPID = re.compile(r"\d+|(epic|gog):[\w.-]+")
 
@@ -46,6 +50,11 @@ class GamePlugin:
     def replace(self, game_path: Path, files: dict[str, Path]) -> None:
         """Reemplaza audios del juego {audio_id: wav_nuevo}. Debe hacer backup antes."""
         raise NotImplementedError
+
+    def subtitles(self, game_path: Path) -> dict[str, str]:
+        """Opcional: el texto de cada audio sacado de los subtítulos del juego {audio_id: texto}.
+        Si el juego los trae, Revoz no necesita transcribir esas líneas (más exacto y gratis)."""
+        return {}
 
 
 @dataclass(frozen=True)
@@ -73,13 +82,13 @@ def _read_info(folder: Path) -> PluginInfo:
         meta = tomllib.loads((folder / "plugin.toml").read_text("utf-8"))
     except (OSError, tomllib.TOMLDecodeError) as e:
         raise PluginError(f"plugin.toml inválido: {e}") from None
-    if not (folder / "plugin.py").is_file():
-        raise PluginError("falta plugin.py")
     name, kind, appids = meta.get("name"), meta.get("kind"), meta.get("appids", [])
     if not isinstance(name, str) or not name.strip():
         raise PluginError("falta 'name'")
-    if kind not in (GAME, PROVIDER):
-        raise PluginError("'kind' debe ser \"game\" o \"provider\"")
+    if kind not in (GAME, PROVIDER, THEME, LANGUAGE):
+        raise PluginError("'kind' debe ser \"game\", \"provider\", \"theme\" o \"language\"")
+    if kind in CODE_KINDS and not (folder / "plugin.py").is_file():
+        raise PluginError("falta plugin.py")
     if not isinstance(appids, list) or not all(isinstance(a, str) and _APPID.fullmatch(a) for a in appids):
         raise PluginError("'appids' debe ser una lista como [\"12210\", \"epic:Nombre\", \"gog:1234\"]")
     if kind == GAME and not appids:
@@ -94,6 +103,14 @@ def _read_info(folder: Path) -> PluginInfo:
         folder,
         digest(folder),
     )
+
+
+def read_meta(info: PluginInfo) -> dict:
+    """Contenido de plugin.toml (para temas e idiomas, que son solo datos)."""
+    try:
+        return tomllib.loads((info.path / "plugin.toml").read_text("utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        raise PluginError(f"plugin.toml inválido: {e}") from None
 
 
 def discover(root: Path) -> tuple[list[PluginInfo], list[str]]:
@@ -177,6 +194,8 @@ def trust(file: Path, trusted: dict[str, str], info: PluginInfo) -> None:
 
 
 def load(info: PluginInfo, trusted: dict[str, str]) -> GamePlugin | Provider:
+    if info.kind not in CODE_KINDS:
+        raise PluginError("los temas e idiomas no tienen código para cargar")
     # Se recalcula el hash justo antes de ejecutar: si alguien tocó el plugin, no se carga.
     if trusted.get(info.id) != digest(info.path):
         raise PluginError("el plugin no es confiable o cambió desde que se aprobó")

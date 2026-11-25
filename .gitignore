@@ -1,26 +1,73 @@
+# Python
 .venv/
+venv/
 __pycache__/
+*.py[cod]
 *.egg-info/
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Secretos (las API keys van al almacén seguro de Windows, nunca a archivos)
 .env
+.env.*
+*.key
+
 # Documentos internos de planificación (no se publican)
 ROADMAP.md
 CONTEXTO_PROYECTO.md
+
 # Compilación del .exe (se publica en GitHub Releases, no en el repo)
 build/
 dist/
 *.spec
+
 # Plugins instalados por el usuario (no se suben al repo)
 /plugins/
+
+# Editores y sistema
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
+.DS_Store
+*.log
+
 # Nunca subir archivos de juegos ni audio
+# Audio
 *.wav
+*.mp3
+*.ogg
+*.flac
+*.opus
+*.wma
+*.xwm
+*.fuz
+*.adx
+*.hca
 *.wem
 *.bnk
 *.pck
 *.fsb
 *.bank
-*.ogg
+*.acb
+*.awb
+*.vsnd_c
+# Paquetes de juegos
 *.rpf
 *.pak
+*.utoc
+*.ucas
+*.vpk
+*.cpk
+*.forge
+*.bsa
+*.ba2
 *.assets
 *.resource
+# Audios extraídos por Revoz y backups (por si alguien prueba dentro del repo)
+/Revoz/
+revoz_extraido.json

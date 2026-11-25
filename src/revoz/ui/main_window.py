@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import html
 import json
 import os
 import queue
 import re
+import shutil
 import sys
 import threading
 from pathlib import Path
@@ -42,6 +44,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMessageBox,
+    QProgressDialog,
     QPushButton,
     QScrollArea,
     QStackedWidget,
@@ -53,16 +56,19 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from revoz.core import keys, plugins, providers, scan, stores
+from revoz.core import keys, official, plugins, providers, scan, stores, transcribe, tts, valve
+from revoz.core.cache import Cache
 from revoz.core import project as pj
 from revoz.core.plugins import GamePlugin, PluginInfo
 from revoz.core.providers import Provider, ProviderError
 from revoz.core.scan import ScanResult
+from revoz.core.engine import Engine
 from revoz.core.steam import Game
 from revoz.ui import i18n, themes
 from revoz.ui.i18n import N_, tr
 from revoz.ui.profile_page import ProfilePage, avatar_pixmap
 from revoz.ui.translation_page import TranslationPage
+from revoz.version import VERSION
 
 # Los plugins viven junto a la app (al lado del .exe, o en la raíz del proyecto al correr desde el código).
 # ponytail: si algún día se instala en Program Files (sin permiso de escritura), mover plugins a APPDATA.
@@ -80,6 +86,10 @@ PROJECTS_DIR = DATA_DIR / "projects"  # un proyecto de traducción por versión 
 PROFILE_FILE = DATA_DIR / "profile.json"  # perfil local: nombre y preferencias (sin cuentas)
 AVATAR_FILE = DATA_DIR / "avatar.png"
 WINDOW_FILE = DATA_DIR / "window.json"  # posición y tamaño de la ventana
+GAME_PREFS_FILE = DATA_DIR / "game_prefs.json"  # juego -> IA e idioma elegidos la última vez
+DISABLED_FILE = DATA_DIR / "disabled_plugins.json"  # plugins desactivados (siguen instalados)
+MODELS_DIR = DATA_DIR / "models"  # modelos de Whisper descargados
+ENGINE_CACHE = DATA_DIR / "cache.db"  # transcripciones y traducciones ya hechas
 RESTART_FLAG = "--perfil"  # al reiniciar por cambio de idioma, abrir directo en el Perfil
 STORE_COLOR = {"Epic": "#2a2a2a", "GOG": "#7b2fbe", "Folder": "#9a6700", "Manual": "#1f6feb"}
 
@@ -211,6 +221,9 @@ class _Bus(QObject):
     started = Signal(str)
     scanned = Signal(str, object)
     checked = Signal(bool, str)
+    official = Signal(object)  # idiomas oficiales según Steam ({nombre: con voces}) o None
+    extract_progress = Signal(int, int)
+    extracted = Signal(object)  # (extraídos, fallidos) o el error
 
 
 class GamePage(QWidget):
@@ -227,11 +240,18 @@ class GamePage(QWidget):
         on_add_folder,
         on_translate,
         defaults: dict,
+        on_prefs_changed,
+        on_extracted=None,  # después de extraer: volver a analizar el juego
     ) -> None:
         super().__init__()
+        self.game, self.on_extracted = game, on_extracted or (lambda: None)
         self.providers = {p.name: p for p in provider_list}
         self.bus = _Bus()
         self.bus.checked.connect(self._on_checked)
+        self.bus.official.connect(self._on_official)
+        self._official: dict | None = None
+        self.official_label = QLabel()
+        self.official_label.setWordWrap(True)
 
         back = QPushButton(tr("← Biblioteca"))
         back.clicked.connect(on_back)
@@ -279,9 +299,9 @@ class GamePage(QWidget):
         self.key.setEchoMode(QLineEdit.Password)
         self.key.setPlaceholderText(tr("Pegá tu API key"))
         self.key_state = QLabel()
-        save = QPushButton(tr("Guardar"))
+        save = self.save_btn = QPushButton(tr("Guardar"))
         save.clicked.connect(self._save_key)
-        delete = QPushButton(tr("Borrar"))
+        delete = self.delete_btn = QPushButton(tr("Borrar"))
         delete.clicked.connect(self._delete_key)
         self.provider.currentTextChanged.connect(self._on_provider_changed)
 
@@ -289,6 +309,7 @@ class GamePage(QWidget):
         for code, name in providers.TARGET_LANGUAGES:
             self.language.addItem(tr(name), code)
         self.language.currentIndexChanged.connect(lambda: self.lang_state.clear())
+        self.language.currentIndexChanged.connect(self._show_official)
         self.check = QPushButton(tr("Comprobar idioma"))
         self.check.clicked.connect(self._check_language)
         self.lang_state = QLabel()
@@ -307,13 +328,15 @@ class GamePage(QWidget):
         form.addRow("", self.key_state)
         form.addRow("", key_buttons)
         form.addRow(tr("Traducir al:"), lang_row)
+        form.addRow("", self.official_label)
         form.addRow("", self.lang_state)
         api_box = QGroupBox(tr("Traducción"))
         api_box.setLayout(form)
 
         translate = QPushButton(tr("Traducir voces →"))
         translate.setObjectName("primary")
-        can_translate = bool(plugin) or result.status == "green"
+        extracted = (game.path / valve.FOLDER / valve.MAP_FILE).is_file()  # ya se sacaron audios de los paquetes
+        can_translate = bool(plugin) or result.status == "green" or extracted
         translate.setEnabled(can_translate)
         translate.setToolTip(
             tr("Abre el proyecto de traducción: progreso, costo y revisión de líneas")
@@ -351,6 +374,7 @@ class GamePage(QWidget):
         right.addLayout(version_row)
         right.addWidget(info)
         right.addWidget(open_dir, alignment=Qt.AlignLeft)
+        right.addWidget(self._dialogue_box(result, plugin, on_add_plugin, self._extract))
         right.addWidget(compat_box)
         right.addWidget(api_box)
         right.addWidget(translate, alignment=Qt.AlignLeft)
@@ -372,14 +396,191 @@ class GamePage(QWidget):
         root = QVBoxLayout(self)
         root.addWidget(back, alignment=Qt.AlignLeft)
         root.addWidget(scroll, 1)
-        # Arranca con las preferencias del perfil
+        # Arranca con lo último elegido en este juego o, si no, con las preferencias del perfil
         if defaults.get("provider") in self.providers:
             self.provider.setCurrentText(defaults["provider"])
         self.language.setCurrentIndex(max(0, self.language.findData(defaults.get("language", "es-419"))))
         self._on_provider_changed()
+        # Desde acá, cada cambio queda recordado para este juego
+        remember = lambda: on_prefs_changed(self.provider.currentText(), self.language.currentData())  # noqa: E731
+        self.provider.currentTextChanged.connect(remember)
+        self.language.currentIndexChanged.connect(remember)
+        if game.store == "Steam":
+            self._ask_official(game.appid)
+
+    @staticmethod
+    def _dialogue_box(result: ScanResult, plugin, on_add_plugin, on_extract=None) -> QGroupBox:
+        """Dónde están los audios del juego, en qué formato, y si Revoz los lee, necesita un plugin o están cifrados."""
+        box = QGroupBox(tr("Diálogos"))
+        lay = QVBoxLayout(box)
+        found = scan.dialogue_formats(result)
+        if not found:
+            lay.addWidget(QLabel(tr("No se encontraron archivos de audio.")))
+            return box
+        needs_plugin = can_extract = False
+        for fmt, info in found:
+            state = scan.support(fmt, info["kind"])
+            if plugin and state == scan.PLUGIN:
+                text, color = tr("lo lee el plugin {name}", name=plugin.name), "#3fb950"
+            elif state == scan.READ:
+                text, color = tr("se lee directo"), "#3fb950"
+            elif state == scan.EXTRACT:
+                text, color = tr("se puede extraer"), "#3fb950"
+                can_extract = True
+            elif state == scan.PLUGIN:
+                text, color = tr("necesita un plugin"), "#d29922"
+                needs_plugin = True
+            else:
+                text, color = tr("cifrado: no se puede"), "#f85149"
+            folder = info["folder"] if info["folder"] not in ("", ".") else tr("repartidos en toda la carpeta del juego")
+            row = QLabel(
+                f"<b>{html.escape(fmt)}</b> ({html.escape(', '.join(info['exts']))}) - "
+                + f"<span style='color:{color}'>{html.escape(text)}</span><br>"
+                + html.escape(tr("Carpeta: {path}", path=folder) + f"  ·  {info['bytes'] / 1048576:,.0f} MB")
+            )  # fmt: skip
+            row.setWordWrap(True)
+            row.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            lay.addWidget(row)
+        if can_extract and on_extract:
+            extract = QPushButton(tr("Extraer…"))
+            extract.setObjectName("primary")
+            extract.setToolTip(tr("Saca los audios del paquete a la carpeta Revoz del juego para poder traducirlos."))
+            extract.clicked.connect(on_extract)
+            lay.addWidget(extract, alignment=Qt.AlignLeft)
+        if needs_plugin:
+            add = QPushButton(tr("Agregar plugin"))
+            menu = QMenu(add)
+            menu.addAction(tr("Desde un .zip…"), lambda: on_add_plugin(True))
+            menu.addAction(tr("Desde una carpeta…"), lambda: on_add_plugin(False))
+            add.setMenu(menu)
+            lay.addWidget(add, alignment=Qt.AlignLeft)
+        return box
+
+    def _extract(self) -> None:
+        """Saca los audios de los paquetes del juego a <juego>/Revoz, con aviso de espacio y progreso."""
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            items = valve.find(self.game.path)
+        finally:
+            QApplication.restoreOverrideCursor()
+        if not items:
+            QMessageBox.information(self, "Revoz", tr("No se encontraron audios dentro de los paquetes."))
+            return
+        voices = [i for i in items if valve.is_voice(i.inner)]
+        mb = lambda its: sum(i.size for i in its) / 1048576  # noqa: E731
+        target = self.game.path / valve.FOLDER
+        try:
+            free = shutil.disk_usage(self.game.path).free / 1048576
+        except OSError:
+            free = 0
+        box = QMessageBox(QMessageBox.Question, "Revoz", tr("Extraer los audios a:") + f"\n{target}\n\n" + tr("Espacio libre en ese disco: {mb} MB", mb=f"{free:,.0f}"), parent=self)
+        only = box.addButton(tr("Solo voces ({n} audios, {mb} MB)", n=len(voices), mb=f"{mb(voices):,.0f}"), QMessageBox.AcceptRole) if voices else None
+        everything = box.addButton(tr("Todo el audio ({n}, {mb} MB)", n=len(items), mb=f"{mb(items):,.0f}"), QMessageBox.AcceptRole)
+        box.addButton(tr("Cancelar"), QMessageBox.RejectRole)
+        box.exec()
+        chosen = voices if box.clickedButton() is only else items if box.clickedButton() is everything else None
+        if not chosen:
+            return
+
+        dialog = QProgressDialog(tr("Extrayendo audios…"), tr("Cancelar"), 0, len(chosen), self)
+        dialog.setWindowTitle("Revoz")
+        dialog.setMinimumDuration(0)
+        dialog.setAutoClose(False)
+        dialog.setValue(0)
+        bus = self.bus
+        bus.extract_progress.connect(lambda done, total: dialog.setValue(done))
+
+        class Stop(Exception):
+            pass
+
+        def progress(done: int, total: int) -> None:
+            if dialog.wasCanceled():
+                raise Stop
+            bus.extract_progress.emit(done, total)
+
+        game_path = self.game.path
+
+        def work() -> None:
+            try:
+                result = valve.extract(game_path, chosen, progress=progress)
+            except Stop:
+                result = (len(valve.load_map(game_path / valve.FOLDER)), [])
+            except Exception as e:
+                result = e
+            try:
+                bus.extracted.emit(result)
+            except RuntimeError:
+                pass
+
+        def done(result) -> None:
+            dialog.close()
+            if isinstance(result, Exception):
+                QMessageBox.warning(self, "Revoz", tr("No se pudo extraer:") + f"\n\n{type(result).__name__}: {result}")
+                return
+            count, failed = result
+            text = tr("Listo: {n} audios extraídos en:", n=count) + f"\n{target}"
+            if failed:
+                text += "\n\n" + tr("No se pudieron extraer: {n}", n=len(failed)) + "\n" + "\n".join(sorted({f"• {tr(r)}" for _, r in failed})[:4])
+            text += "\n\n" + tr("Si querés, ordená los audios en subcarpetas por personaje: Revoz usa el nombre de la carpeta.")
+            msg = QMessageBox(QMessageBox.Information, "Revoz", text, parent=self)
+            open_btn = msg.addButton(tr("Abrir carpeta"), QMessageBox.ActionRole)
+            msg.addButton(QMessageBox.Ok)
+            msg.exec()
+            if msg.clickedButton() is open_btn:
+                _open_folder(target)
+            self.on_extracted()
+
+        bus.extracted.connect(done)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _ask_official(self, appid: str) -> None:
+        """Pregunta a la tienda de Steam qué idiomas oficiales tiene el juego (en segundo plano)."""
+        bus = self.bus
+
+        def work() -> None:
+            try:
+                langs = official.steam_languages(appid)
+            except Exception:  # sin internet o respuesta rara: simplemente no se muestra nada
+                langs = None
+            try:
+                bus.official.emit(langs)
+            except RuntimeError:  # la página se cerró mientras consultaba
+                pass
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_official(self, langs) -> None:
+        self._official = langs
+        self._show_official()
+
+    def _show_official(self) -> None:
+        if not self._official:
+            self.official_label.clear()
+            return
+        lang = self.language.currentText()
+        state, other = official.check(self._official, self.language.currentData())
+        if state == official.AUDIO:
+            color, text = "#3fb950", tr("✓ Este juego ya tiene voces oficiales en {lang}. Activalas en Steam: Propiedades → Idioma. No hace falta traducirlo.", lang=lang)
+        elif state == official.OTHER_REGION:
+            # el nombre como figura en Revoz ("Español (España)") si lo tenemos; si no, el de Steam
+            other = next((tr(n) for c, n in providers.TARGET_LANGUAGES if official.STEAM_NAMES.get(c, [""])[0] == other), other)
+            color, text = "#d29922", tr("Tiene voces oficiales en {other} (Steam: Propiedades → Idioma), pero no en {lang}.", other=other, lang=lang)
+        elif state == official.TEXT:
+            color, text = "#d29922", tr("Tiene textos oficiales en {lang}, pero no voces.", lang=lang)
+        else:
+            color, text = "", tr("Steam no lista {lang} para este juego: no hay traducción oficial.", lang=lang)
+        self.official_label.setStyleSheet(f"color: {color};" if color else "")
+        self.official_label.setText(text)
 
     def _on_provider_changed(self) -> None:
         self.lang_state.clear()
+        provider = self.providers.get(self.provider.currentText())
+        needs_key = provider is None or provider.needs_key
+        for w in (self.key, self.save_btn, self.delete_btn):
+            w.setEnabled(needs_key)
+        if not needs_key:
+            self.key_state.setText(tr("No necesita API key: corre en tu PC."))
+            return
         try:
             ok = keys.has(self.provider.currentText())
         except Exception:  # backend de keyring no disponible
@@ -409,10 +610,10 @@ class GamePage(QWidget):
     def _check_language(self) -> None:
         name = self.provider.currentText()
         try:
-            key = keys.get(name)
+            key = keys.get(name) if self.providers[name].needs_key else ""
         except Exception:
             key = None
-        if not key:
+        if key is None or (not key and self.providers[name].needs_key):
             self.lang_state.setText(tr("Primero guardá la API key de este proveedor."))
             return
         provider, code, lang = self.providers[name], self.language.currentData(), self.language.currentText()
@@ -449,7 +650,7 @@ class MainWindow(QMainWindow):
     def __init__(self, section: int = 0) -> None:
         super().__init__()
         self._closing = False
-        self.setWindowTitle("Revoz")
+        self.setWindowTitle(f"Revoz {VERSION}")
         self.resize(1100, 720)
         self._restore_geometry()  # misma posición y tamaño que la última vez
 
@@ -457,19 +658,23 @@ class MainWindow(QMainWindow):
         self.preferred: dict[str, str] = _load_json(PREFS_FILE)
         self.prices: dict[str, list[float]] = _load_json(PRICES_FILE)
         self.profile: dict = _load_json(PROFILE_FILE)
-        # Idioma de la interfaz: el que eligió la persona, o el de Windows la primera vez
-        i18n.set_language(self.profile.get("ui_language") or i18n.system_language())
-        self._theme = self.profile.get("theme", themes.DEFAULT)
-        themes.apply(self._theme)
-        # Si el tema es "Sistema", seguir a Windows cuando cambia entre claro y oscuro
-        QGuiApplication.styleHints().colorSchemeChanged.connect(self._on_system_theme_changed)
+        self.game_prefs: dict[str, dict] = _load_json(GAME_PREFS_FILE)
+        # Idioma de la interfaz: el que eligió la persona, o el de Windows la primera vez.
+        # Se aplica dos veces: antes de los plugins (para sus avisos) y después (por si es un idioma de un plugin).
+        ui_language = self.profile.get("ui_language") or i18n.system_language()
+        i18n.set_language(ui_language)
         self.open_when_ready: str | None = None
         self.status: dict[str, str] = {}
         self.bus = _Bus()
         self.bus.started.connect(self._on_started)
         self.bus.scanned.connect(self._on_scanned)
 
-        self._load_plugins()
+        self._load_plugins()  # también registra temas e idiomas de la comunidad
+        i18n.set_language(ui_language)
+        self._theme = self.profile.get("theme", themes.DEFAULT)
+        themes.apply(self._theme)
+        # Si el tema es "Sistema", seguir a Windows cuando cambia entre claro y oscuro
+        QGuiApplication.styleHints().colorSchemeChanged.connect(self._on_system_theme_changed)
 
         self.grid = QListWidget()
         self.grid.setViewMode(QListWidget.IconMode)
@@ -606,7 +811,7 @@ class MainWindow(QMainWindow):
             self.grid.addItem(item)
             self.items[key] = item
         cached = self.cache.get(g.appid)
-        if cached and cached["buildid"] == g.buildid:
+        if cached and cached["buildid"] == g.buildid and "formats" in cached["result"]:  # análisis viejo sin formatos: rehacer
             self._set_status(g.appid, cached["result"]["status"])
         else:  # nunca analizado o la tienda lo actualizó
             self._queue_scan(g)
@@ -742,11 +947,45 @@ class MainWindow(QMainWindow):
         PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
         found, errors = plugins.discover(PLUGIN_DIR)
         trusted = plugins.load_trusted(TRUST_FILE)
+        themes.reset_custom()
+        i18n.reset_custom()
+        # Plugins que la persona desactivó: siguen en la carpeta, pero no se cargan ni se preguntan.
+        self.disabled: set[str] = set(_load_json(DISABLED_FILE).get("disabled", []))
         # filas de la pestaña Plugins: (carpeta, nombre, versión, autor, tipo, estado)
-        self.plugin_rows = [(e.split(":")[0], "", "", "", "", "Error:" + e.split(":", 1)[1]) for e in errors]
+        self.plugin_rows = []
+        for e in list(errors):
+            folder = e.split(":")[0]
+            if folder in self.disabled:  # uno roto pero desactivado no molesta con avisos
+                errors.remove(e)
+                self.plugin_rows.append((folder, "", "", "", "", N_("Desactivado")))
+            else:
+                self.plugin_rows.append((folder, "", "", "", "", "Error:" + e.split(":", 1)[1]))
         for info in found:
-            kind = tr("Juego") + f" ({', '.join(info.appids)})" if info.kind == plugins.GAME else tr("Servicio de IA")
+            kind = {
+                plugins.GAME: tr("Juego") + f" ({', '.join(info.appids)})",
+                plugins.PROVIDER: tr("Servicio de IA"),
+                plugins.THEME: tr("Tema"),
+                plugins.LANGUAGE: tr("Idioma de la interfaz"),
+            }[info.kind]
             row = (info.id, info.name, info.version, info.author, kind)
+            if info.id in self.disabled:
+                self.plugin_rows.append((*row, N_("Desactivado")))
+                continue
+            if info.kind in (plugins.THEME, plugins.LANGUAGE):
+                # Solo datos: no ejecutan código, así que no se pide aprobación; se validan al registrarlos.
+                try:
+                    meta = plugins.read_meta(info)
+                    if info.kind == plugins.THEME:
+                        themes.register(info.name, meta.get("colors"))
+                        status = N_("Activo")
+                    else:
+                        skipped = i18n.register_language(meta.get("code"), meta.get("language_name"), meta.get("texts"))
+                        status = tr("Activo ({n} textos inválidos ignorados)", n=skipped) if skipped else N_("Activo")
+                except (plugins.PluginError, ValueError) as e:
+                    errors.append(f"{info.id}: {e}")
+                    status = f"Error: {e}"
+                self.plugin_rows.append((*row, status))
+                continue
             if not plugins.is_trusted(trusted, info):
                 answer = QMessageBox.question(
                     self,
@@ -784,14 +1023,21 @@ class MainWindow(QMainWindow):
         hint = QLabel(
             tr("Los plugins se guardan en: {path}", path=PLUGIN_DIR) + "\n"
             + tr("Agregá un plugin desde un .zip o una carpeta. Antes de activarse, Revoz te pide que lo apruebes.")
+            + "\n"
+            + tr("Los temas y los idiomas no ejecutan código, así que se activan solos.")
+            + "\n"
+            + tr("Crear plantilla arma un tema o un idioma nuevo, listo para editar con el Bloc de notas y compartir.")
         )
         hint.setWordWrap(True)
         hint.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
-        self.plugin_table = QTableWidget(0, 6)
-        self.plugin_table.setHorizontalHeaderLabels([tr("Carpeta"), tr("Nombre"), tr("Versión"), tr("Autor"), tr("Tipo"), tr("Estado")])
-        self.plugin_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
-        self.plugin_table.horizontalHeader().setStretchLastSection(True)
+        self.plugin_table = QTableWidget(0, 7)
+        self.plugin_table.setHorizontalHeaderLabels(
+            [tr("Carpeta"), tr("Nombre"), tr("Versión"), tr("Autor"), tr("Tipo"), tr("Estado"), ""]
+        )
+        header = self.plugin_table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(5, QHeaderView.Stretch)  # el estado ocupa el espacio que sobra
         self.plugin_table.verticalHeader().hide()
         self.plugin_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.plugin_table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -809,6 +1055,13 @@ class MainWindow(QMainWindow):
             b.clicked.connect(slot)
             buttons.addWidget(b)
         buttons.addStretch()
+        create = QPushButton(tr("Crear plantilla"))
+        create.setToolTip(tr("Arma un plugin listo para editar, para compartir con la comunidad"))
+        create_menu = QMenu(create)
+        create_menu.addAction(tr("Tema (con los colores del tema actual)…"), lambda: self._create_template(plugins.THEME))
+        create_menu.addAction(tr("Idioma de la interfaz (con todos los textos)…"), lambda: self._create_template(plugins.LANGUAGE))
+        create.setMenu(create_menu)
+        buttons.addWidget(create)
 
         tab = QWidget()
         lay = QVBoxLayout(tab)
@@ -824,8 +1077,24 @@ class MainWindow(QMainWindow):
             for c, text in enumerate(row):
                 cell = QTableWidgetItem(tr(text) if c == 5 else text)
                 if c == 5:
-                    cell.setForeground(QColor("#3fb950" if text == "Activo" else "#f85149"))
+                    active = text == "Activo" or text.startswith(tr("Activo"))
+                    color = "#8b949e" if text == "Desactivado" else "#3fb950" if active else "#f85149"
+                    cell.setForeground(QColor(color))
                 self.plugin_table.setItem(r, c, cell)
+            folder = row[0]
+            toggle = QPushButton(tr("Activar") if folder in self.disabled else tr("Desactivar"))
+            toggle.setToolTip(tr("Activar o desactivar este plugin sin borrarlo"))
+            toggle.clicked.connect(lambda _=False, f=folder: self._toggle_plugin(f))
+            self.plugin_table.setCellWidget(r, 6, toggle)
+        self.plugin_table.resizeRowsToContents()
+
+    def _toggle_plugin(self, folder: str) -> None:
+        if folder in self.disabled:
+            self.disabled.discard(folder)
+        else:
+            self.disabled.add(folder)
+        _save_json(DISABLED_FILE, {"disabled": sorted(self.disabled)})
+        self._reload_plugins()
 
     def _install_plugin(self, source: str) -> PluginInfo | None:
         if not source:
@@ -881,8 +1150,34 @@ class MainWindow(QMainWindow):
     def _reload_plugins(self) -> None:
         self._load_plugins()
         self._fill_plugin_table()
+        themes.apply(self._theme)  # por si se editó el tema que está en uso
         for key in self.items:
             self._refresh_item(key)
+
+    def _create_template(self, kind: str) -> None:
+        """Crea un plugin de tema o de idioma dentro de la carpeta de plugins, listo para editar."""
+        base = "mi_tema" if kind == plugins.THEME else "mi_idioma"
+        folder = PLUGIN_DIR / base
+        n = 2
+        while folder.exists():
+            folder = PLUGIN_DIR / f"{base}_{n}"
+            n += 1
+        try:
+            if kind == plugins.THEME:
+                file = themes.write_template(folder, self._theme)
+            else:
+                file = i18n.write_template(folder)
+        except OSError as e:
+            QMessageBox.warning(self, "Revoz", tr("No se pudo crear la plantilla:") + f"\n\n{e}")
+            return
+        QMessageBox.information(
+            self,
+            "Revoz",
+            tr("Plantilla creada en:") + f"\n{file}\n\n"
+            + tr("Editala con el Bloc de notas y tocá Recargar para verla en Revoz."),
+        )
+        _open_folder(folder)
+        self._reload_plugins()
 
     def _open_plugin_dir(self) -> None:
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(PLUGIN_DIR)))
@@ -974,8 +1269,10 @@ class MainWindow(QMainWindow):
             self.groups[self.group_of[appid]],
             self._switch_version,
             lambda: self._add_version(appid),
-            lambda provider, code, lang: self._open_translation(appid, provider, f"{lang} ({code})"),
-            self.profile,
+            lambda provider, code, lang: self._open_translation(appid, provider, f"{lang} ({code})", code),
+            {**self.profile, **self.game_prefs.get(self.group_of[appid], {})},
+            lambda provider, language: self._remember_game_prefs(appid, provider, language),
+            on_extracted=lambda: self._rescan(appid),
         )
         self.stack.addWidget(page)
         self.stack.setCurrentWidget(page)
@@ -1076,6 +1373,7 @@ class MainWindow(QMainWindow):
         for i in range(self.stack.count()):
             page = self.stack.widget(i)
             if isinstance(page, TranslationPage):
+                page.stop()
                 page._save()
         _save_json(WINDOW_FILE, {"geometry": bytes(self.saveGeometry().toBase64()).decode()})
 
@@ -1119,7 +1417,7 @@ class MainWindow(QMainWindow):
         if self.pages.currentIndex() == 2:
             self._build_profile()
 
-    def _open_translation(self, appid: str, provider: str, language: str) -> None:
+    def _open_translation(self, appid: str, provider: str, language: str, code: str = "es-419") -> None:
         game = self.games[appid]
         file = PROJECTS_DIR / (re.sub(r"[^\w.-]", "_", appid) + ".json")
         project = pj.load(file)
@@ -1139,7 +1437,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, "Revoz", tr("No se encontraron líneas de voz sueltas en este juego."))
                 return
             project = pj.Project(appid, game.name, lines=lines)
-        project.language, project.provider = language, provider
+        project.language, project.provider, project.target = language, provider, code
         try:
             pj.save(file, project)
         except OSError as e:
@@ -1153,9 +1451,56 @@ class MainWindow(QMainWindow):
             self.stack.removeWidget(page)
             page.deleteLater()
 
-        page = TranslationPage(project, file, self.prices, lambda: _save_json(PRICES_FILE, self.prices), back)
+        plugin = self.game_plugins.get(appid, (None, None))[1]
+
+        def make_engine(proj: pj.Project) -> Engine:
+            return Engine(proj, game.path, self._cache(), MODELS_DIR, plugin=plugin, transcriber_factory=transcribe.Whisper)
+
+        def get_key(name: str) -> str | None:
+            try:
+                return keys.get(name)
+            except Exception:  # backend de keyring no disponible
+                return None
+
+        page = TranslationPage(
+            project,
+            file,
+            self.prices,
+            lambda: _save_json(PRICES_FILE, self.prices),
+            back,
+            provider=next((p for p in self.providers if p.name == provider), None),
+            get_key=get_key,
+            make_engine=make_engine,
+            tts=self._tts(),
+            dub_dir=PROJECTS_DIR / (re.sub(r"[^\w.-]", "_", appid) + "_voz"),
+            game_path=game.path,
+            backup_dir=DATA_DIR / "backups" / re.sub(r"[^\w.-]", "_", appid),
+        )
         self.stack.addWidget(page)
         self.stack.setCurrentWidget(page)
+
+    def _remember_game_prefs(self, appid: str, provider: str, language: str) -> None:
+        """Guarda la IA y el idioma elegidos para este juego (vale para todas sus versiones)."""
+        self.game_prefs[self.group_of[appid]] = {"provider": provider, "language": language}
+        _save_json(GAME_PREFS_FILE, self.game_prefs)
+
+    def _tts(self) -> dict:
+        if getattr(self, "_tts_providers", None) is None:
+            self._tts_providers = {
+                p.name: p for p in (tts.WindowsVoices(), tts.Piper(DATA_DIR / "piper"), tts.ElevenLabsVoices())
+            }
+        return self._tts_providers
+
+    def _cache(self) -> Cache:
+        if getattr(self, "_engine_cache", None) is None:
+            self._engine_cache = Cache(ENGINE_CACHE)
+        return self._engine_cache
+
+    def _rescan(self, appid: str) -> None:
+        """Vuelve a analizar un juego (ej. después de extraer audios) y reabre su página al terminar."""
+        self.open_when_ready = appid
+        self._queue_scan(self.games[appid])
+        self.statusBar().showMessage(tr("Volviendo a analizar el juego…"))
 
     def _switch_version(self, appid: str) -> None:
         self.preferred[self.group_of[appid]] = appid  # recordar la versión elegida

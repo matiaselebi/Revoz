@@ -1,0 +1,19 @@
+# Ejemplo de tema para Revoz. Solo datos: no ejecuta código.
+# Los 11 colores son obligatorios y tienen que ser #rrggbb.
+name = "Atardecer"
+version = "1.0"
+author = "Revoz (ejemplo)"
+kind = "theme"
+
+[colors]
+bg = "#1c1210"            # fondo
+surface = "#2b1b17"       # hover y encabezados
+button = "#33201b"        # botones
+button_hover = "#432a23"  # botón con el mouse encima
+border = "#4d3029"        # bordes
+input = "#140c0a"         # campos de texto
+text = "#fbe9e1"          # texto
+muted = "#c49a8a"         # texto secundario
+accent = "#ff8a3d"        # color principal
+accent_text = "#1c1210"   # texto sobre el color principal
+select = "#a8432a"        # selección en listas y tablas

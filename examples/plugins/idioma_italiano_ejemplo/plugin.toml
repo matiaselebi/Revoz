@@ -1,0 +1,27 @@
+# Ejemplo de idioma para Revoz (incompleto a propósito: lo que falta se ve en inglés).
+# Para traducir todo, usá Plugins -> Crear plantilla -> Idioma de la interfaz: trae todos los textos.
+# Las claves (izquierda) son el texto en español tal como está en Revoz; no las cambies.
+# Los {datos} entre llaves tienen que quedar igual en la traducción.
+name = "Italiano (ejemplo)"
+version = "0.1"
+author = "Revoz (ejemplo)"
+kind = "language"
+code = "it"
+language_name = "Italiano"
+
+[texts]
+"Biblioteca" = "Libreria"
+"Plugins" = "Plugin"
+"Perfil" = "Profilo"
+"+ Agregar juego" = "+ Aggiungi gioco"
+"Buscar juego…" = "Cerca gioco…"
+"Todos los juegos" = "Tutti i giochi"
+"Todas las tiendas" = "Tutti i negozi"
+"{total} juegos" = "{total} giochi"
+"{shown} de {total} juegos" = "{shown} di {total} giochi"
+"Audio legible: fácil de traducir" = "Audio leggibile: facile da tradurre"
+"Apariencia" = "Aspetto"
+"Idioma de la app:" = "Lingua dell'app:"
+"Tema:" = "Tema:"
+"Preferencias" = "Preferenze"
+"← Biblioteca" = "← Libreria"

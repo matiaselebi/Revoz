@@ -56,7 +56,13 @@ def _rpf3(encrypted: int) -> bytes:
 @pytest.mark.parametrize(
     "name,data,expected",
     [
-        ("a.wem", b"RIFF\0\0\0\0WAVEfmt ", ("WAV / Wwise (.wem)", scan.EASY)),
+        ("a.wem", b"RIFF\0\0\0\0WAVEfmt ", ("Wwise (.wem)", scan.EASY)),
+    ("a.wav", b"RIFF\0\0\0\0WAVEfmt ", ("WAV", scan.EASY)),
+    ("x.cpk", b"CPK \xff\0\0\0", ("CRI (.cpk)", scan.PACK)),
+    ("x.acb", b"@UTF\0\0", ("CRI (.acb)", scan.PACK)),
+    ("x.awb", b"AFS2\x01", ("CRI (.awb)", scan.PACK)),
+    ("x.adx", b"\x80\x00\x00\x20\x03\x12\x04\x01" + b"\0" * 24 + b"(c)CRI", ("CRI ADX", scan.EASY)),
+    ("x.forge", b"scimitar\0\x1b", ("Ubisoft (.forge)", scan.PACK)),
         ("b.bnk", b"BKHD" + b"\0" * 20, ("Wwise (.bnk)", scan.EASY)),
         ("speech.rpf", _rpf3(0xFFFFFFFF), ("RAGE (RPF3) cifrado", scan.LOCKED)),
         ("open.rpf", _rpf3(0), ("RAGE (RPF3)", scan.PACK)),
@@ -201,3 +207,19 @@ def test_list_folder_games(tmp_path: Path):
     games = stores.list_folder_games([lib, tmp_path / "no-existe"])
     assert sorted((g.name, g.store) for g in games) == [("Juego A", "Folder"), ("Juego B", "Folder")]
     assert all(g.appid.startswith("folder:") for g in games)
+
+
+def test_scan_tells_format_folder_and_support(tmp_path):
+    for who in ("barney", "gman"):
+        d = tmp_path / "valve" / "sound" / who
+        d.mkdir(parents=True)
+        (d / "a.wav").write_bytes(b"RIFF\0\0\0\0WAVEfmt " + b"\0" * 1000)
+    (tmp_path / "audio.pck").write_bytes(b"AKPK" + b"\0" * 5000)
+    (tmp_path / "x.rpf").write_bytes(b"RPF7" + b"\0" * 8 + b"XXXX" + b"\0" * 10)
+    r = scan.scan_dir(tmp_path)
+    formats = dict(scan.dialogue_formats(r))
+    assert formats["WAV"]["folder"] == "valve/sound" and formats["WAV"]["exts"] == [".wav"]
+    assert scan.support("WAV", formats["WAV"]["kind"]) == scan.READ
+    assert scan.support("Wwise (.pck)", formats["Wwise (.pck)"]["kind"]) == scan.PLUGIN
+    assert scan.support("RAGE (RPF7) cifrado", formats["RAGE (RPF7) cifrado"]["kind"]) == scan.ENCRYPTED
+    assert list(formats)[0] == "Wwise (.pck)"  # primero el que más pesa

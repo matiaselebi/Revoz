@@ -19,6 +19,22 @@ CORE_MESSAGES = {
     "La carpeta no existe",
     "Elegí la carpeta del juego, no la raíz de un disco",
     "Ese juego ya está en la biblioteca",
+    "Cargando el modelo de voz (la primera vez se descarga)…",
+    "La IA cortó; reintentando en unos segundos…",
+    "La IA pidió esperar: se llegó al límite de uso",
+    "Respuesta inesperada del servicio",
+    "La IA no devolvió las traducciones en el formato pedido",
+    "Elegí un modelo de la IA",
+    "Ollama no está abierto. Instalalo desde ollama.com y abrilo.",
+    "Ollama no tiene modelos. Descargá uno, por ejemplo: ollama pull qwen2.5",
+    "Este servicio no traduce texto",
+    "La IA no devolvió esta línea; se reintenta en la próxima pasada",
+    "'Hasta' tiene que ser mayor que 'Desde'",
+    "'Desde' está después del final del audio",
+    "Elegí una voz para este personaje (botón Voces)",
+    "Piper no está instalado",
+    "Piper no pudo generar el audio",
+    "El archivo de Piper descargado no es válido",
 }
 
 

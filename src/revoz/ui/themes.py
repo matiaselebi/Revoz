@@ -3,6 +3,9 @@ Los nombres de los temas se guardan en español en el perfil y se traducen solo 
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QApplication
@@ -52,6 +55,59 @@ THEMES: dict[str, dict[str, str]] = {
 }  # fmt: skip
 
 CHOICES = [DEFAULT, SYSTEM, *[n for n in THEMES if n != DEFAULT]]
+BUILTIN = set(THEMES)
+COLOR_KEYS = set(THEMES[DEFAULT])
+_HEX = re.compile(r"#[0-9a-fA-F]{6}")
+
+
+# --- temas de la comunidad (plugins de tipo "theme") ---
+
+
+def register(name: str, colors: object) -> None:
+    """Suma un tema de un plugin. Valida todo: los colores van dentro de la hoja de estilos,
+    así que solo se aceptan colores #rrggbb (nada de texto que pueda alterar los estilos)."""
+    name = name.strip() if isinstance(name, str) else ""
+    if not name or len(name) > 40:
+        raise ValueError("el nombre del tema debe tener entre 1 y 40 caracteres")
+    if name in BUILTIN or name == SYSTEM:
+        raise ValueError(f"'{name}' es un tema incluido en Revoz; usá otro nombre")
+    if not isinstance(colors, dict):
+        raise ValueError("falta la tabla [colors]")
+    missing, extra = COLOR_KEYS - set(colors), set(colors) - COLOR_KEYS
+    if missing or extra:
+        raise ValueError(f"colores faltantes: {sorted(missing)}; sobrantes: {sorted(extra)}")
+    bad = [k for k, v in colors.items() if not (isinstance(v, str) and _HEX.fullmatch(v))]
+    if bad:
+        raise ValueError(f"colores inválidos (deben ser #rrggbb): {sorted(bad)}")
+    THEMES[name] = {k: v.lower() for k, v in colors.items()}
+    if name not in CHOICES:
+        CHOICES.append(name)
+
+
+def reset_custom() -> None:
+    """Saca los temas de plugins (antes de volver a cargarlos)."""
+    for name in [n for n in THEMES if n not in BUILTIN]:
+        del THEMES[name]
+    CHOICES[:] = [c for c in CHOICES if c in BUILTIN or c == SYSTEM]
+
+
+def write_template(folder: Path, base: str = DEFAULT) -> Path:
+    """Crea un plugin de tema listo para editar, a partir de los colores de un tema existente."""
+    folder.mkdir(parents=True, exist_ok=True)
+    lines = [
+        "# Tema para Revoz. Cambiá el nombre y los colores (#rrggbb) y reiniciá Revoz o tocá Recargar.",
+        'name = "Mi tema"',
+        'version = "1.0"',
+        'author = "tu nombre"',
+        'kind = "theme"',
+        "",
+        "[colors]",
+    ]
+    for key, value in resolve(base).items():
+        lines.append(f'{key} = "{value}"')
+    file = folder / "plugin.toml"
+    file.write_text("\n".join(lines) + "\n", "utf-8")
+    return file
 
 
 def resolve(name: str) -> dict[str, str]:
@@ -94,6 +150,13 @@ QScrollBar::handle:vertical {{ background: {c['border']}; border-radius: 5px; mi
 QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; width: 0; }}
 QScrollBar:horizontal {{ background: {c['bg']}; height: 10px; margin: 0; }}
 QScrollBar::handle:horizontal {{ background: {c['border']}; border-radius: 5px; min-width: 30px; }}
+QCheckBox::indicator, QRadioButton::indicator, QTableView::indicator {{
+    width: 14px; height: 14px; border: 1px solid {c['muted']}; background: {c['input']}; }}
+QCheckBox::indicator, QTableView::indicator {{ border-radius: 3px; }}
+QRadioButton::indicator {{ border-radius: 8px; }}
+QCheckBox::indicator:checked, QRadioButton::indicator:checked, QTableView::indicator:checked {{
+    background: {c['accent']}; border-color: {c['accent']}; }}
+QCheckBox::indicator:disabled, QRadioButton::indicator:disabled {{ border-color: {c['border']}; }}
 QToolTip {{ background: {c['button']}; color: {c['text']}; border: 1px solid {c['border']}; }}
 """
 

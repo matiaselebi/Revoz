@@ -10,7 +10,7 @@ Revoz is an open source desktop tool for translating the **voices** of video gam
 
 It scans your Steam library, tells you which games have audio that can be translated, and lets you plug in your own API key for any translation or dubbing service. The community extends it with **plugins**: one plugin per game (or engine) that knows how to extract and replace that game's audio, and plugins that add new AI services.
 
-> **Status: early development.** Library scanning, the plugin system, API key storage and language checks work. The actual translation pipeline (extract → transcribe → translate → synthesize → replace) is not implemented yet.
+> **Status: early development.** Library scanning, the plugin system, API key storage and language checks work. Transcription, text translation (Phase 2) and the translated voice (Phase 3, with Windows voices) work. Putting the voice back into the game (Phase 4) is not implemented yet.
 ### What Revoz is (and is not)
 
 - Revoz is **only a tool**. It does not include, host, distribute or link game files, audio, encryption keys or translations.
@@ -48,15 +48,33 @@ It scans your Steam library, tells you which games have audio that can be transl
   - **Estimated cost**: total audio minutes (read from file headers) and estimated characters, multiplied by the prices you enter from your provider's pricing page. Revoz doesn't guess prices.
   - **Line review** table: listen to the original audio, edit character, original text and translation, set the status, search and filter.
   - **Export/Import CSV** to review in a spreadsheet or split the work between several people. Importing merges by line id and empty cells never erase anything.
-  - Automatic transcription and translation with AI are not implemented yet.
+  - **Translate automatically with AI**: transcribes the voices with **Whisper on your PC** (free, no internet after downloading the model) and translates the text with the chosen AI.
+    - **Choose the tracks**: a checkbox and a ▶ button on each line, and **Select all** (if every line the filter shows is chosen it clears them, otherwise it chooses them all). With nothing chosen, the lines the table shows are used.
+    - **Translate only part of an audio**: type **From / To** or drag over the waveform.
+    - **Player** at the bottom with the waveform (like Audacity), play/pause, previous, next and a time bar.
+    - **Translated voice**: a voice for each character (Windows voices, free; Piper and ElevenLabs optional), with a Try button and a Spread voices button. If it's too long the voice first speaks faster, then it's sped up without changing the pitch so it fits the original's time, and saved in the same format as the game's audio. Lines that still don't fit are flagged. A pronunciation dictionary fixes names the voice says wrong.
+    - **Dialogue box** on each game page: the audio format, its folder, and whether Revoz reads it, can extract it, needs a plugin or it's encrypted. Valve games (`.vpk`) have an **Extract** button that takes the voices out to `<game>/Revoz` so they can be translated; you can sort them into per-character subfolders and Revoz uses the folder name as the character.
+    - **Install into the game**: replaces the game's audio with the translated voice (in the same format as the original) after backing up every original outside the game folder. **Restore original** puts everything back with one click, and Revoz notices when a store update changes those files.
+    - **Export the translated audio** as WAV files, keeping the same paths as in the game.
+    - **Test mode**: do only the first N lines of what the table shows (e.g. filter by a character) to check quality and cost first.
+    - Lines without voice (gunshots, music) are detected and not translated. Lines Whisper isn't sure about are marked **doubtful**.
+    - **Cache**: what was already transcribed or translated is never requested (or paid) again.
+    - **Spending limit** per project, **pause** at any time (it continues where it stopped) and automatic retries if the connection drops.
+    - **Glossary and characters**: names that aren't translated, how each character talks and what the game is about. Characters are detected from the game's folders.
+    - Translators: OpenAI, Anthropic, Gemini, Mistral, DeepSeek, xAI, Groq, OpenRouter, DeepL, Google Translate, and **Ollama** (local and free, no API key).
 - **Profile** (top right): your name or nickname, a photo, your usual target language and AI (every game starts with them), your activity, and shortcuts to the data folder and a full re-scan. It also has **themes**: Revoz (default), System (follows Windows light/dark), Dark, Light, Midnight, Arcade, Forest and High contrast. No accounts or sign-in: everything stays on your PC.
 - Each game's page has a **Compatibility** section showing its plugin (if any), the game id plugins use, and an **Add plugin for this game** button.
+
+### Download
+
+Get `Revoz.exe` from the [Releases](../../releases) page: one file, no installer and no Python needed.
+Windows may show "Windows protected your PC" because the file isn't signed: click **More info** and then **Run anyway**.
+What changed in each version is in [CHANGELOG.md](CHANGELOG.md).
 
 ### Requirements
 
 - Windows 10/11 (Linux may work but is untested)
-- Python 3.11 or newer
-- Steam
+- Python 3.11 or newer (only to run from source)
 
 ### Running from source
 
@@ -85,6 +103,7 @@ Plugins live in the `plugins` folder **next to Revoz** (next to `Revoz.exe`, or 
 The easiest way to manage them is the **Plugins** tab:
 
 - **Add from .zip** or **Add folder**: installs a plugin you downloaded. Nothing runs until you approve it.
+- **Disable / Enable** (on each row): turns a plugin off without deleting it. A disabled plugin isn't loaded and never asks for approval.
 - **Remove**: sends the plugin folder to the Recycle Bin.
 - **Reload**: picks up plugins you copied by hand.
 - The **Status** column shows whether each plugin is active, not approved, or failed to load (with the reason).
@@ -142,6 +161,11 @@ class Plugin(GamePlugin):
     def replace(self, game_path: Path, files: dict[str, Path]) -> None:
         """Replace game audio with new WAV files {audio_id: new_wav}.
         Always back up the original first."""
+
+    def subtitles(self, game_path: Path) -> dict[str, str]:
+        """Optional: the text of each audio taken from the game's subtitles {audio_id: text}.
+        Revoz then doesn't need to transcribe those lines (more accurate and free)."""
+        return {}
 ```
 
 Rules for game plugins:
@@ -184,6 +208,51 @@ Rules for provider plugins:
 - Use HTTPS only (`get_json` enforces it and handles errors for you).
 - Never log, print or save the key.
 
+#### Theme and language plugins
+
+Themes and interface languages are **data only**: everything lives in `plugin.toml` and there's no `plugin.py`. They don't run code, so Revoz enables them without asking. Every value is still checked before it's used.
+
+The easiest way to make one is **Plugins → Create template**. It creates a ready-to-edit plugin in the plugins folder: a theme with the current theme's colors, or a language with every Revoz text already in English. Edit it with Notepad and press **Reload**.
+
+Theme (`kind = "theme"`): the 11 colors are required and must be `#rrggbb`.
+
+```toml
+name = "Sunset"
+version = "1.0"
+author = "your name"
+kind = "theme"
+
+[colors]
+bg = "#1c1210"
+surface = "#2b1b17"
+button = "#33201b"
+button_hover = "#432a23"
+border = "#4d3029"
+input = "#140c0a"
+text = "#fbe9e1"
+muted = "#c49a8a"
+accent = "#ff8a3d"
+accent_text = "#1c1210"
+select = "#a8432a"
+```
+
+Language (`kind = "language"`): each key is the Spanish text exactly as it appears in Revoz, and the value is its translation. Keep the `{placeholders}` exactly as they are. Texts that are missing or invalid show up in English.
+
+```toml
+name = "Revoz in Italian"
+version = "1.0"
+author = "your name"
+kind = "language"
+code = "it"
+language_name = "Italiano"
+
+[texts]
+"Biblioteca" = "Libreria"
+"{total} juegos" = "{total} giochi"
+```
+
+Examples: [`examples/plugins/tema_atardecer`](examples/plugins/tema_atardecer) and [`examples/plugins/idioma_italiano_ejemplo`](examples/plugins/idioma_italiano_ejemplo).
+
 ### Project structure
 
 ```
@@ -213,7 +282,7 @@ Contributions are welcome: game plugins, AI services, format detection and trans
 
 [MIT](LICENSE). You can use, modify and share Revoz, including in your own projects, as long as you keep the license notice.
 
-Revoz uses [PySide6](https://doc.qt.io/qtforpython/) (Qt for Python), licensed under the LGPL-3.0.
+Revoz uses [PySide6](https://doc.qt.io/qtforpython/) (Qt for Python, LGPL-3.0), [faster-whisper](https://github.com/SYSTRAN/faster-whisper) and CTranslate2 (MIT), and [PyAV](https://github.com/PyAV-Org/PyAV) (BSD), which includes FFmpeg (LGPL). Whisper models are downloaded from Hugging Face the first time they're used.
 
 ---
 
@@ -223,7 +292,7 @@ Revoz es una herramienta de escritorio open source para traducir las **voces** d
 
 Analiza tu biblioteca de Steam, te dice qué juegos tienen audio que se puede traducir y te deja usar tu propia API key de cualquier servicio de traducción o doblaje. La comunidad la amplía con **plugins**: un plugin por juego (o por motor) que sabe extraer y reemplazar el audio de ese juego, y plugins que suman nuevos servicios de IA.
 
-> **Estado: desarrollo temprano.** Ya funcionan el análisis de la biblioteca, el sistema de plugins, el guardado de API keys y la comprobación de idiomas. El proceso de traducción en sí (extraer → transcribir → traducir → sintetizar → reemplazar) todavía no está implementado.
+> **Estado: desarrollo temprano.** Ya funcionan el análisis de la biblioteca, el sistema de plugins, el guardado de API keys y la comprobación de idiomas. Ya funcionan la transcripción, la traducción del texto (Fase 2) y la voz traducida (Fase 3, con las voces de Windows). Ponerla dentro del juego (Fase 4) todavía no está implementado.
 ### Qué es Revoz (y qué no)
 
 - Revoz es **solo una herramienta**. No incluye, aloja, distribuye ni enlaza archivos de juegos, audios, claves de cifrado ni traducciones.
@@ -261,15 +330,33 @@ Analiza tu biblioteca de Steam, te dice qué juegos tienen audio que se puede tr
   - **Costo estimado**: minutos totales de audio (leídos de las cabeceras de los archivos) y caracteres estimados, multiplicados por los precios que cargás desde la página de precios de tu proveedor. Revoz no inventa precios.
   - Tabla de **revisión de líneas**: escuchar el audio original, editar personaje, texto original y traducción, cambiar el estado, buscar y filtrar.
   - **Exportar/Importar CSV** para revisar en una planilla o repartir el trabajo entre varias personas. Al importar se combina por id de línea y las celdas vacías nunca borran nada.
-  - La transcripción y traducción automáticas con IA todavía no están implementadas.
+  - **Traducir automáticamente con IA**: transcribe las voces con **Whisper en tu PC** (gratis, sin internet después de bajar el modelo) y traduce el texto con la IA elegida.
+    - **Elegir las pistas**: casilla y botón ▶ en cada línea, y **Seleccionar todo** (si todas las que muestra el filtro están elegidas las quita; si no, las elige todas). Si no elegís ninguna, se usan las que muestra la tabla.
+    - **Traducir solo una parte del audio**: escribí **Desde / Hasta** o arrastrá sobre la onda.
+    - **Reproductor** abajo con la onda del sonido (como Audacity), play/pausa, anterior, siguiente y barra de tiempo.
+    - **Voz traducida**: una voz por personaje (voces de Windows, gratis; Piper y ElevenLabs opcionales), con botón Probar y botón Repartir voces. Si queda larga, primero la voz habla más rápido y después se acelera sin cambiar el tono para que entre en el tiempo del original y se guarda en el mismo formato que el audio del juego. Las que igual no entran quedan marcadas. Un diccionario de pronunciación corrige los nombres que la voz dice mal.
+    - **Cuadro Diálogos** en la página de cada juego: el formato del audio, su carpeta, y si Revoz lo lee, lo puede extraer, necesita un plugin o está cifrado. Los juegos de Valve (`.vpk`) tienen un botón **Extraer** que saca las voces a `<juego>/Revoz` para poder traducirlas; si querés, ordenalas en subcarpetas por personaje y Revoz usa el nombre de la carpeta como personaje.
+    - **Instalar en el juego**: reemplaza los audios del juego por la voz traducida (en el mismo formato que el original), después de guardar una copia de cada original fuera de la carpeta del juego. **Restaurar original** deja todo como estaba con un clic, y Revoz se da cuenta si una actualización de la tienda cambió esos archivos.
+    - **Exportar el audio traducido** como archivos WAV, con las mismas rutas que en el juego.
+    - **Modo prueba**: hace solo las primeras N líneas de lo que muestra la tabla (por ejemplo, filtrando por un personaje) para ver la calidad y el costo primero.
+    - Las líneas sin voz (disparos, música) se detectan y no se traducen. Las que Whisper no entendió bien quedan marcadas como **dudosas**.
+    - **Caché**: lo que ya se transcribió o tradujo nunca se vuelve a pedir (ni a pagar).
+    - **Límite de gasto** por proyecto, **pausa** en cualquier momento (sigue donde quedó) y reintentos automáticos si se corta internet.
+    - **Glosario y personajes**: nombres que no se traducen, cómo habla cada personaje y de qué trata el juego. Los personajes se detectan por las carpetas del juego.
+    - Traductores: OpenAI, Anthropic, Gemini, Mistral, DeepSeek, xAI, Groq, OpenRouter, DeepL, Google Translate y **Ollama** (local y gratis, sin API key).
 - **Perfil** (arriba a la derecha): tu nombre o apodo, una foto, el idioma y la IA que usás normalmente (cada juego arranca con ellos), tu actividad y accesos a la carpeta de datos y a volver a analizar todo. También tiene **temas**: Revoz (el de la app), Sistema (sigue el modo claro u oscuro de Windows), Oscuro, Claro, Medianoche, Arcade, Bosque y Alto contraste. Sin cuentas ni inicio de sesión: todo queda en tu PC.
 - La página de cada juego tiene una sección **Compatibilidad** que muestra su plugin (si tiene), el id del juego que usan los plugins y un botón **Agregar plugin para este juego**.
+
+### Descargar
+
+Bajá `Revoz.exe` de la página de [Releases](../../releases): un solo archivo, sin instalador y sin Python.
+Windows puede mostrar "Windows protegió tu PC" porque el archivo no está firmado: tocá **Más información** y después **Ejecutar de todas formas**.
+Lo que cambió en cada versión está en [CHANGELOG.md](CHANGELOG.md).
 
 ### Requisitos
 
 - Windows 10/11 (Linux puede funcionar, pero no está probado)
-- Python 3.11 o superior
-- Steam
+- Python 3.11 o superior (solo para ejecutar desde el código)
 
 ### Ejecutar desde el código fuente
 
@@ -298,6 +385,7 @@ Los plugins van en la carpeta `plugins` **junto a Revoz** (al lado de `Revoz.exe
 Lo más fácil es manejarlos desde la pestaña **Plugins**:
 
 - **Agregar desde .zip** o **Agregar carpeta**: instala un plugin que descargaste. No se ejecuta nada hasta que lo aprobás.
+- **Desactivar / Activar** (en cada fila): apaga un plugin sin borrarlo. Un plugin desactivado no se carga y nunca pide aprobación.
 - **Quitar**: manda la carpeta del plugin a la papelera de reciclaje.
 - **Recargar**: detecta plugins que copiaste a mano.
 - La columna **Estado** muestra si cada plugin está activo, no aprobado o si falló al cargar (con el motivo).
@@ -355,6 +443,11 @@ class Plugin(GamePlugin):
     def replace(self, game_path: Path, files: dict[str, Path]) -> None:
         """Reemplaza audios del juego con WAV nuevos {audio_id: wav_nuevo}.
         Siempre hacé backup del original antes."""
+
+    def subtitles(self, game_path: Path) -> dict[str, str]:
+        """Opcional: el texto de cada audio sacado de los subtítulos del juego {audio_id: texto}.
+        Así Revoz no necesita transcribir esas líneas (más exacto y gratis)."""
+        return {}
 ```
 
 Reglas para los plugins de juego:
@@ -397,6 +490,51 @@ Reglas para los plugins de proveedor:
 - Usá solo HTTPS (`get_json` lo exige y maneja los errores por vos).
 - Nunca muestres, registres ni guardes la clave.
 
+#### Plugins de tema y de idioma
+
+Los temas y los idiomas de la interfaz son **solo datos**: todo va en `plugin.toml` y no hay `plugin.py`. No ejecutan código, así que Revoz los activa sin preguntar. Igual revisa cada valor antes de usarlo.
+
+Lo más fácil para crear uno es **Plugins → Crear plantilla**. Arma un plugin listo para editar dentro de la carpeta de plugins: un tema con los colores del tema actual, o un idioma con todos los textos de Revoz ya en inglés. Editalo con el Bloc de notas y tocá **Recargar**.
+
+Tema (`kind = "theme"`): los 11 colores son obligatorios y tienen que ser `#rrggbb`.
+
+```toml
+name = "Atardecer"
+version = "1.0"
+author = "tu nombre"
+kind = "theme"
+
+[colors]
+bg = "#1c1210"
+surface = "#2b1b17"
+button = "#33201b"
+button_hover = "#432a23"
+border = "#4d3029"
+input = "#140c0a"
+text = "#fbe9e1"
+muted = "#c49a8a"
+accent = "#ff8a3d"
+accent_text = "#1c1210"
+select = "#a8432a"
+```
+
+Idioma (`kind = "language"`): cada clave es el texto en español tal como aparece en Revoz y el valor es su traducción. Dejá los `{datos}` entre llaves exactamente igual. Los textos que falten o sean inválidos se ven en inglés.
+
+```toml
+name = "Revoz en italiano"
+version = "1.0"
+author = "tu nombre"
+kind = "language"
+code = "it"
+language_name = "Italiano"
+
+[texts]
+"Biblioteca" = "Libreria"
+"{total} juegos" = "{total} giochi"
+```
+
+Ejemplos: [`examples/plugins/tema_atardecer`](examples/plugins/tema_atardecer) y [`examples/plugins/idioma_italiano_ejemplo`](examples/plugins/idioma_italiano_ejemplo).
+
 ### Estructura del proyecto
 
 ```
@@ -426,4 +564,4 @@ Las contribuciones son bienvenidas: plugins de juegos, servicios de IA, detecci�
 
 [MIT](LICENSE). Podés usar, modificar y compartir Revoz, incluso en tus propios proyectos, siempre que mantengas el aviso de licencia.
 
-Revoz usa [PySide6](https://doc.qt.io/qtforpython/) (Qt para Python), con licencia LGPL-3.0.
+Revoz usa [PySide6](https://doc.qt.io/qtforpython/) (Qt para Python, LGPL-3.0), [faster-whisper](https://github.com/SYSTRAN/faster-whisper) y CTranslate2 (MIT), y [PyAV](https://github.com/PyAV-Org/PyAV) (BSD), que incluye FFmpeg (LGPL). Los modelos de Whisper se descargan de Hugging Face la primera vez que se usan.
